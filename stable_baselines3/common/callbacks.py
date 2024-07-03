@@ -21,7 +21,11 @@ except ImportError:
 
 
 from stable_baselines3.common.evaluation import evaluate_policy
-from stable_baselines3.common.vec_env import DummyVecEnv, VecEnv, sync_envs_normalization
+from stable_baselines3.common.vec_env import DummyVecEnv, VecEnv, VecNormalize, sync_envs_normalization
+
+import plotly.graph_objects as go
+from pathlib import Path
+from collections import deque
 
 if TYPE_CHECKING:
     from stable_baselines3.common import base_class
@@ -423,6 +427,9 @@ class EvalCallback(EventCallback):
         if self.callback_on_new_best is not None:
             self.callback_on_new_best.init_callback(self.model)
 
+        # For logging
+        self._logging_callback = EvalLoggingCallback(log_dir=self.logger.dir)
+
     def _log_success_callback(self, locals_: Dict[str, Any], globals_: Dict[str, Any]) -> None:
         """
         Callback passed to the  ``evaluate_policy`` function
@@ -438,6 +445,14 @@ class EvalCallback(EventCallback):
             maybe_is_success = info.get("is_success")
             if maybe_is_success is not None:
                 self._is_success_buffer.append(maybe_is_success)
+
+    def _eval_step_callback(self, locals_: Dict[str, Any], globals_: Dict[str, Any]) -> None:
+        """ """
+        self._log_success_callback(locals_, globals_)
+
+        self._logging_callback.on_step(locals_, globals_)
+
+        ...
 
     def _on_step(self) -> bool:
         continue_training = True
@@ -465,7 +480,7 @@ class EvalCallback(EventCallback):
                 deterministic=self.deterministic,
                 return_episode_rewards=True,
                 warn=self.warn,
-                callback=self._log_success_callback,
+                callback=self._eval_step_callback,
             )
 
             if self.log_path is not None:
@@ -707,3 +722,287 @@ class ProgressBarCallback(BaseCallback):
         # Flush and close progress bar
         self.pbar.refresh()
         self.pbar.close()
+
+
+class EvalLoggingCallback:
+    def __init__(
+        self,
+        vars_to_log: dict = {},
+        vars_to_plot: list = [],
+        verbose=0,
+        stats_window_size=100,
+        exclude_rolling_mean: list = [],
+        plot_log_interval=2,
+        track: bool = False,
+        is_eval: bool = False,
+        log_dir: str = None,
+    ):
+        self.stats_window_size = stats_window_size
+
+        self.log_dir = log_dir
+
+        self.ep_num = 0  # Number of completed episodes
+        self.plot_log_interval = plot_log_interval  # Frequency at which to log the plots
+
+        self.num_envs = None
+        self.vars_to_log = vars_to_log  # keys: variable names, values: "mean" or "last" (how to proc the values over the ep)
+        self.vars_to_plot = vars_to_plot  # Variables to plot
+        self.vars_to_plot_data = None  # Data to plot
+
+        self.vars_to_plot = ["action", "angles", "command", "torques", "reward", "velocities", "ctrl_cmd"]
+
+        # Tracking
+        self.track = track  # Whether to track the variables with wandb
+        self.wandb_run = None
+        self.episode_plots_data = []
+
+        # Vars to log
+        self.exclude_rolling_mean = exclude_rolling_mean  # Variables for which to exclude the rolling mean
+        self.vars_values = None  # Store the values of the variables to log. {var_name: [[ts_1, ts_2], [ts_1, ...], ...]} where ts_i is the value of the variable at time step i. 1st dimension for env_idx
+
+        self.vars_proc_values = None  # Store the processed values of the variables to log. {var_name: [ep_1, ep_2, ...]} where proc_val_i is the processed value of the variable for episode i
+
+        self.vars_rolling_values = (
+            None  # Store the rolling mean of the variables to log. {var_name: deque([mean_1, mean_2, ...], maxlen=100)}
+        )
+
+        self._init_vals()
+
+    def _init_vals(self) -> None:
+        # Initialize the variables to log
+        self.num_envs = 1
+        self.vars_values = {var_name: [[] for _ in range(self.num_envs)] for var_name in self.vars_to_log}
+
+        self.vars_proc_values = {var_name: [] for var_name in self.vars_to_log}
+        self.vars_rolling_values = {
+            var_name: deque(maxlen=self.stats_window_size)
+            for var_name in self.vars_to_log
+            if var_name not in self.exclude_rolling_mean
+        }
+
+        self.vars_to_plot_data = {var_name: [[] for _ in range(self.num_envs)] for var_name in self.vars_to_plot}
+
+        self.action_ep_vals = [[] for _ in range(self.num_envs)]
+        self.angles_ep_vals = [[] for _ in range(self.num_envs)]
+
+    def on_step(self, locals, globals) -> bool:
+        self.locals = locals
+        self.globals = globals
+        for env_idx in range(self.num_envs):
+            step_infos = self.locals["infos"][env_idx]
+            if isinstance(locals["env"], VecNormalize):
+                step_obs = self.locals["env"].get_original_obs()
+            else:
+                step_obs = self.locals["new_observations"]
+
+            for var_name in self.vars_values.keys():
+                var_value = step_infos.get(var_name)
+
+                if var_value is not None:
+                    self.vars_values[var_name][env_idx].append(var_value)
+
+            for var_name in self.vars_to_plot_data.keys():
+                info_keys = step_infos.keys()
+                obs_keys = step_obs.keys()
+                if var_name in info_keys:
+                    var_value = step_infos.get(var_name)
+                elif var_name in obs_keys:
+                    var_value = step_obs.get(var_name)
+                elif var_name == "reward":
+                    var_value = self.locals["rewards"][env_idx]
+                else:
+                    raise ValueError(f"Variable {var_name} not found in step_infos or step_obs.")
+
+                if var_value is not None:
+                    self.vars_to_plot_data[var_name][env_idx].append(var_value)
+
+            # Check if the episode is done
+            if self.locals["dones"][env_idx]:
+                self.ep_num += 1
+                for var_name in self.vars_values.keys():
+                    if self.vars_to_log[var_name] == "last":
+                        proc_var = self.vars_values[var_name][env_idx][-1]
+                    elif self.vars_to_log[var_name] == "mean":
+                        proc_var = np.mean(self.vars_values[var_name][env_idx])
+                    else:
+                        raise ValueError(
+                            f"Invalid proc type ({self.vars_to_log[var_name]}) for var: {var_name}. Must be 'mean' or 'last'."
+                        )
+
+                    self.vars_proc_values[var_name].append(proc_var)
+                    self.logger.record(f"custom/{var_name}", proc_var)
+
+                    # Rolling
+                    if var_name not in self.exclude_rolling_mean:
+                        self.vars_rolling_values[var_name].append(proc_var)
+                        rolling_mean = np.mean(self.vars_rolling_values[var_name])
+
+                        self.logger.record(f"custom/rolling_mean_{var_name}", rolling_mean)
+
+                    # Reset the list of values for the variable
+                    self.vars_values[var_name][env_idx] = []
+
+                if self.ep_num % self.plot_log_interval == 0 or self.ep_num == 1:
+                    self.plot_episode(env_idx)
+
+                for var_name in self.vars_to_plot_data.keys():
+                    self.vars_to_plot_data[var_name][env_idx] = []
+
+        return True
+
+    def plot_episode(self, env_idx) -> None:
+        normalized = False
+        max_torque = 30.5
+        max_speed = 30
+        max_angle = 180
+
+        for var_name, var_values in self.vars_to_plot_data.items():
+            data = np.array(var_values[env_idx])
+
+            # Unnormalize the data (Only data in the observations)
+            if normalized:
+                if var_name == "angles":
+                    data *= max_angle
+                elif var_name == "velocities":
+                    data *= max_speed
+                elif var_name == "torques":
+                    data *= max_torque
+
+            fig = go.Figure()
+
+            # Add Trace depending on var_name
+            if var_name == "action":
+                fig.add_trace(go.Scatter(y=data[:-1, 0], mode="lines+markers", name="action_j2"))
+                fig.add_trace(go.Scatter(y=data[:-1, 1], mode="lines+markers", name="action_j4"))
+                try:
+                    fig.add_trace(go.Scatter(y=data[:-1, 2], mode="lines+markers", name="action_j6"))
+                except:
+                    ...
+                y_label = "Value"
+
+            elif var_name == "angles":
+                fig.add_trace(go.Scatter(y=data[:-1, 0, 0], mode="lines+markers", name="j2"))
+                fig.add_trace(go.Scatter(y=data[:-1, 0, 1], mode="lines+markers", name="j4"))
+                fig.add_trace(go.Scatter(y=data[:-1, 0, 2], mode="lines+markers", name="j6"))
+                y_label = "Angle [deg]"
+
+            elif var_name == "command":
+                fig.add_trace(go.Scatter(y=data[:-1, 0], mode="lines+markers", name="j2"))
+                fig.add_trace(go.Scatter(y=data[:-1, 1], mode="lines+markers", name="j4"))
+                fig.add_trace(go.Scatter(y=data[:-1, 2], mode="lines+markers", name="j6"))
+                y_label = "[deg/s]"
+
+            elif var_name == "ctrl_cmd":
+                fig.add_trace(go.Scatter(y=data[:-1, 0], mode="lines+markers", name="j2"))
+                fig.add_trace(go.Scatter(y=data[:-1, 1], mode="lines+markers", name="j4"))
+                fig.add_trace(go.Scatter(y=data[:-1, 2], mode="lines+markers", name="j6"))
+                y_label = "[deg/s]"
+
+            elif var_name == "velocities":
+                fig.add_trace(go.Scatter(y=data[:-1, 0, 0], mode="lines+markers", name="j2"))
+                fig.add_trace(go.Scatter(y=data[:-1, 0, 1], mode="lines+markers", name="j4"))
+                fig.add_trace(go.Scatter(y=data[:-1, 0, 2], mode="lines+markers", name="j6"))
+                y_label = "[deg/s]"
+
+            elif var_name == "target_vels":
+                fig.add_trace(go.Scatter(y=data[:-1, 0, 0], mode="lines+markers", name="j2"))
+                fig.add_trace(go.Scatter(y=data[:-1, 0, 1], mode="lines+markers", name="j4"))
+                fig.add_trace(go.Scatter(y=data[:-1, 0, 2], mode="lines+markers", name="j6"))
+                y_label = "[deg/s]"
+
+            elif var_name == "torques":
+                fig.add_trace(go.Scatter(y=data[:-1, 0, 0], mode="lines+markers", name="j2"))
+                fig.add_trace(go.Scatter(y=data[:-1, 0, 1], mode="lines+markers", name="j4"))
+                fig.add_trace(go.Scatter(y=data[:-1, 0, 2], mode="lines+markers", name="j6"))
+                y_label = "[N*m]"
+
+            elif var_name == "reward":
+                fig.add_trace(go.Scatter(y=data[:-1], mode="lines+markers", name="reward"))
+                y_label = "reward"
+
+            fig.update_layout(
+                title=f"Episode {self.ep_num} - {var_name.capitalize()}",
+                xaxis_title="Time step",
+                yaxis_title=y_label,
+            )
+            save_path = Path(self.log_dir) / "plots" / "eval" / f"ep_{self.ep_num}" / f"{var_name}_{env_idx}.html"
+            save_path.parent.mkdir(parents=True, exist_ok=True)
+            fig.write_html(save_path, auto_play=False)
+
+        # Plot command, vels, and ctrl_cmd
+        if (
+            "command" in self.vars_to_plot_data.keys()
+            and "velocities" in self.vars_to_plot_data.keys()
+            and "ctrl_cmd" in self.vars_to_plot_data.keys()
+        ):
+            fig = go.Figure()
+            command_data = np.array(self.vars_to_plot_data["command"][env_idx])
+            vels_data = np.array(self.vars_to_plot_data["velocities"][env_idx])
+            ctrl_cmd_data = np.array(self.vars_to_plot_data["ctrl_cmd"][env_idx])
+
+            if normalized:
+                vels_data *= max_speed
+
+            # Command
+            fig.add_trace(
+                go.Scatter(
+                    y=command_data[:-1, 0], mode="lines+markers", name="j2_command", line=dict(color="red", dash="dash")
+                )
+            )
+            fig.add_trace(
+                go.Scatter(
+                    y=command_data[:-1, 1],
+                    mode="lines+markers",
+                    name="j4_command",
+                    line=dict(color="blue", dash="dash"),
+                )
+            )
+            fig.add_trace(
+                go.Scatter(
+                    y=command_data[:-1, 2],
+                    mode="lines+markers",
+                    name="j6_command",
+                    line=dict(color="green", dash="dash"),
+                )
+            )
+
+            # Velocities
+            fig.add_trace(go.Scatter(y=vels_data[:-1, 0, 0], mode="lines+markers", name="j2_vel", line=dict(color="red")))
+            fig.add_trace(go.Scatter(y=vels_data[:-1, 0, 1], mode="lines+markers", name="j4_vel", line=dict(color="blue")))
+            fig.add_trace(go.Scatter(y=vels_data[:-1, 0, 2], mode="lines+markers", name="j6_vel", line=dict(color="green")))
+
+            # Controller velocities
+            fig.add_trace(
+                go.Scatter(
+                    y=ctrl_cmd_data[:-1, 0],
+                    mode="lines+markers",
+                    name="j2_ctrl",
+                    line=dict(color="red", dash="dashdot"),
+                )
+            )
+            fig.add_trace(
+                go.Scatter(
+                    y=ctrl_cmd_data[:-1, 1],
+                    mode="lines+markers",
+                    name="j4_ctrl",
+                    line=dict(color="blue", dash="dashdot"),
+                )
+            )
+            fig.add_trace(
+                go.Scatter(
+                    y=ctrl_cmd_data[:-1, 2],
+                    mode="lines+markers",
+                    name="j6_ctrl",
+                    line=dict(color="green", dash="dashdot"),
+                )
+            )
+
+            plot_name = "comp"
+            fig.update_layout(
+                title=f"Episode {self.ep_num} - Comp",
+                xaxis_title="Time step",
+                yaxis_title=y_label,
+            )
+            save_path = Path(self.log_dir) / "plots" / "eval" / f"ep_{self.ep_num}" / f"{plot_name}_{env_idx}.html"
+            save_path.parent.mkdir(parents=True, exist_ok=True)
+            fig.write_html(save_path, auto_play=False)
