@@ -454,9 +454,16 @@ class EvalCallback(EventCallback):
         """ """
         self._log_success_callback(locals_, globals_)
 
-        self._logging_callback.on_step(locals_, globals_)
+        step_infos = locals_["infos"]
+        if isinstance(locals_["env"], VecNormalize):
+            step_obs = locals_["env"].get_original_obs()
+        else:
+            step_obs = locals_["new_observations"]
 
-        ...
+        reward = locals_["rewards"]
+        done = locals_["dones"]
+
+        self._logging_callback.on_step([step_obs], step_infos, reward, done)
 
     def _on_step(self) -> bool:
         continue_training = True
@@ -738,12 +745,17 @@ class EvalLoggingCallback:
         exclude_rolling_mean: list = [],
         plot_log_interval=2,
         track: bool = False,
-        is_eval: bool = False,
+        is_eval: bool = False,  # A bit confusing. If True, the callback is used from the enjoy script. Else from the EvalCallback
         log_dir: str = None,
     ):
         self.stats_window_size = stats_window_size
 
+        self.is_eval = is_eval
         self.log_dir = log_dir
+        if is_eval:
+            self.plots_dir = Path(self.log_dir) / "plots"
+        else:
+            self.plots_dir = Path(self.log_dir) / "plots" / "eval"
 
         self.ep_num = 0  # Number of completed episodes
         self.plot_log_interval = plot_log_interval  # Frequency at which to log the plots
@@ -754,6 +766,17 @@ class EvalLoggingCallback:
         self.vars_to_plot_data = None  # Data to plot
 
         self.vars_to_plot = ["action", "angles", "command", "torques", "reward", "velocities", "ctrl_cmd"]
+        if is_eval:
+            self.vars_to_eval = {
+                "action": ["sum"],
+                "torques": ["sum"],
+                "peg_force_norm": ["mean", "rms", "max"],
+                "peg_torque_norm": ["mean", "rms", "max"],
+                "socket_x": ["last"],
+                "peg_pose_z": ["last"],
+            }
+        else:
+            self.vars_to_eval = {}
 
         # Tracking
         self.track = track  # Whether to track the variables with wandb
@@ -766,15 +789,17 @@ class EvalLoggingCallback:
 
         self.vars_proc_values = None  # Store the processed values of the variables to log. {var_name: [ep_1, ep_2, ...]} where proc_val_i is the processed value of the variable for episode i
 
-        self.vars_rolling_values = (
-            None  # Store the rolling mean of the variables to log. {var_name: deque([mean_1, mean_2, ...], maxlen=100)}
-        )
+        self.eval_vars_values = None  # See vars_values
+        self.eval_vars_proc_values = None  # See vars_proc_values
 
         self._init_vals()
+        ...
 
     def _init_vals(self) -> None:
         # Initialize the variables to log
         self.num_envs = 1
+
+        # LOG
         self.vars_values = {var_name: [[] for _ in range(self.num_envs)] for var_name in self.vars_to_log}
 
         self.vars_proc_values = {var_name: [] for var_name in self.vars_to_log}
@@ -784,44 +809,82 @@ class EvalLoggingCallback:
             if var_name not in self.exclude_rolling_mean
         }
 
+        # PLOT
         self.vars_to_plot_data = {var_name: [[] for _ in range(self.num_envs)] for var_name in self.vars_to_plot}
 
-        self.action_ep_vals = [[] for _ in range(self.num_envs)]
-        self.angles_ep_vals = [[] for _ in range(self.num_envs)]
+        # EVAL
+        self.eval_vars_values = {}
+        self.eval_vars_proc_values = {}
+        for each_eval_var, eval_types in self.vars_to_eval.items():
+            self.eval_vars_values[each_eval_var] = [[] for _ in range(self.num_envs)]
+            self.eval_vars_proc_values[each_eval_var] = {proc_type: [] for proc_type in eval_types}
+            # Example: eval_vars_values (reset after each episode)
+            # #          # step 1   #step2
+            # 'action': [[[0, 0.4], [0, 1], [1, 1], [0.2, 0.3]], [env_2]]
+            #
+            # Example: eval_vars_proc_values, value appended at each episode
+            # 'action': {
+            #     #       ep 1           # ep2
+            #     #       #env1, env2
+            #     'sum': [[0.4, 1, ...], [...]],
+            # }
 
-    def on_step(self, locals, globals) -> bool:
-        self.locals = locals
-        self.globals = globals
+    def on_step(self, step_obs, step_infos, reward, done) -> bool:
+        """Exract the variables to log from the step infos and observations and log them.
+
+        Args:
+            step_obs: np.ndarray(dict), observations of the env. Size of num_envs
+            step_infos: np.ndarray(dict), info of the env. Size of num_envs
+            reward: np.ndarray(dict), reward of the env. Size of num_envs
+            done: np.ndarray(dict), whether the episode is done. Size of num_envs
+        """
         for env_idx in range(self.num_envs):
-            step_infos = self.locals["infos"][env_idx]
-            if isinstance(locals["env"], VecNormalize):
-                step_obs = self.locals["env"].get_original_obs()
-            else:
-                step_obs = self.locals["new_observations"]
+            env_obs = step_obs[env_idx]
+            env_infos = step_infos[env_idx]
+            env_reward = reward[env_idx]
+            env_done = done[env_idx]
 
+            # LOG
             for var_name in self.vars_values.keys():
-                var_value = step_infos.get(var_name)
+                var_value = env_infos.get(var_name)
 
                 if var_value is not None:
                     self.vars_values[var_name][env_idx].append(var_value)
 
+            # PLOT
             for var_name in self.vars_to_plot_data.keys():
-                info_keys = step_infos.keys()
-                obs_keys = step_obs.keys()
+                info_keys = env_infos.keys()
+                obs_keys = env_obs.keys()
                 if var_name in info_keys:
-                    var_value = step_infos.get(var_name)
+                    var_value = env_infos.get(var_name)
                 elif var_name in obs_keys:
-                    var_value = step_obs.get(var_name)
+                    var_value = env_obs.get(var_name)
                 elif var_name == "reward":
-                    var_value = self.locals["rewards"][env_idx]
+                    var_value = env_reward
                 else:
-                    raise ValueError(f"Variable {var_name} not found in step_infos or step_obs.")
+                    raise ValueError(f"Variable {var_name} not found in env_infos or env_obs.")
 
                 if var_value is not None:
                     self.vars_to_plot_data[var_name][env_idx].append(var_value)
 
+            # EVAL
+            for var_name in self.vars_to_eval.keys():
+                info_keys = env_infos.keys()
+                obs_keys = env_obs.keys()
+                if var_name in info_keys:
+                    var_value = env_infos.get(var_name)
+                elif var_name in obs_keys:
+                    var_value = env_obs.get(var_name)
+                elif var_name == "reward":
+                    var_value = env_reward
+                else:
+                    raise ValueError(f"Variable {var_name} not found in env_infos or env_obs.")
+
+                if var_value is not None:
+                    self.eval_vars_values[var_name][env_idx].append(var_value)
+
             # Check if the episode is done
-            if self.locals["dones"][env_idx]:
+            if env_done:
                 self.ep_num += 1
                 for var_name in self.vars_values.keys():
                     if self.vars_to_log[var_name] == "last":
@@ -834,17 +897,19 @@ class EvalLoggingCallback:
                         )
 
                     self.vars_proc_values[var_name].append(proc_var)
-                    self.logger.record(f"custom/{var_name}", proc_var)
+                    # self.logger.record(f"custom/{var_name}", proc_var)
 
                     # Rolling
                     if var_name not in self.exclude_rolling_mean:
                         self.vars_rolling_values[var_name].append(proc_var)
                         rolling_mean = np.mean(self.vars_rolling_values[var_name])
 
-                        self.logger.record(f"custom/rolling_mean_{var_name}", rolling_mean)
+                        # self.logger.record(f"custom/rolling_mean_{var_name}", rolling_mean)
 
                     # Reset the list of values for the variable
                     self.vars_values[var_name][env_idx] = []
+
+                self._process_eval_vars(env_idx)
 
                 if self.ep_num % self.plot_log_interval == 0 or self.ep_num == 1:
                     self.plot_episode(env_idx)
@@ -855,22 +920,8 @@ class EvalLoggingCallback:
         return True
 
     def plot_episode(self, env_idx) -> None:
-        normalized = False
-        max_torque = 30.5
-        max_speed = 30
-        max_angle = 180
-
         for var_name, var_values in self.vars_to_plot_data.items():
             data = np.array(var_values[env_idx])
-
-            # Unnormalize the data (Only data in the observations)
-            if normalized:
-                if var_name == "angles":
-                    data *= max_angle
-                elif var_name == "velocities":
-                    data *= max_speed
-                elif var_name == "torques":
-                    data *= max_torque
 
             fig = go.Figure()
 
@@ -929,7 +980,7 @@ class EvalLoggingCallback:
                 xaxis_title="Time step",
                 yaxis_title=y_label,
             )
-            save_path = Path(self.log_dir) / "plots" / "eval" / f"ep_{self.ep_num}" / f"{var_name}_{env_idx}.html"
+            save_path = self.plots_dir / f"ep_{self.ep_num}" / f"{var_name}_{env_idx}.html"
             save_path.parent.mkdir(parents=True, exist_ok=True)
             fig.write_html(save_path, auto_play=False)
 
@@ -943,9 +994,6 @@ class EvalLoggingCallback:
             command_data = np.array(self.vars_to_plot_data["command"][env_idx])
             vels_data = np.array(self.vars_to_plot_data["velocities"][env_idx])
             ctrl_cmd_data = np.array(self.vars_to_plot_data["ctrl_cmd"][env_idx])
-
-            if normalized:
-                vels_data *= max_speed
 
             # Command
             fig.add_trace(
@@ -1007,6 +1055,40 @@ class EvalLoggingCallback:
                 xaxis_title="Time step",
                 yaxis_title=y_label,
             )
-            save_path = Path(self.log_dir) / "plots" / "eval" / f"ep_{self.ep_num}" / f"{plot_name}_{env_idx}.html"
+            save_path = self.plots_dir / f"ep_{self.ep_num}" / f"{plot_name}_{env_idx}.html"
             save_path.parent.mkdir(parents=True, exist_ok=True)
             fig.write_html(save_path, auto_play=False)
+
+    def _process_eval_vars(self, env_idx) -> None:
+        for var_name, eval_types in self.vars_to_eval.items():
+            for each_eval_type in eval_types:
+                if each_eval_type == "sum":
+                    proc_var = np.sum(self.eval_vars_values[var_name][env_idx])
+                elif each_eval_type == "mean":
+                    proc_var = np.mean(self.eval_vars_values[var_name][env_idx])
+                elif each_eval_type == "rms":
+                    proc_var = np.sqrt(np.mean(np.square(self.eval_vars_values[var_name][env_idx])))
+                elif each_eval_type == "max":
+                    proc_var = np.max(self.eval_vars_values[var_name][env_idx])
+                elif each_eval_type == "last":
+                    proc_var = self.eval_vars_values[var_name][env_idx][-1]
+                else:
+                    raise ValueError(
+                        f"Invalid eval type ({each_eval_type}) for var: {var_name}. Must be 'sum', 'mean', 'rms', or 'max'."
+                    )
+
+                self.eval_vars_proc_values[var_name][each_eval_type].append(proc_var)
+
+            self.eval_vars_values[var_name][env_idx] = []
+
+    def print_results(self):
+        print("\n---- Mean Processed values ----")
+        for each_eval_var, eval_types in self.vars_to_eval.items():
+            print(f"\n---- {each_eval_var} ----")
+            if each_eval_var == "socket_x":
+                print(f"\t-{self.eval_vars_proc_values[each_eval_var]['last']}")
+                continue
+
+            for each_eval_type in eval_types:
+                proc_var = np.mean(self.eval_vars_proc_values[each_eval_var][each_eval_type])
+                print(f"\t-{each_eval_type}: {proc_var:.4f}")
