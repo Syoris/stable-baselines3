@@ -765,11 +765,24 @@ class EvalLoggingCallback:
         self.vars_to_plot = vars_to_plot  # Variables to plot
         self.vars_to_plot_data = None  # Data to plot
 
-        self.vars_to_plot = ["action", "angles", "command", "torques", "reward", "velocities", "ctrl_cmd"]
+        self.vars_to_plot = [
+            # Obs
+            "joint_angles",
+            "joint_vels",
+            "joint_torques",
+            "joint_target_vels",
+            # Infos
+            "action",
+            "reward",
+            "ik_joint_vels",
+            "ee_vel_ctrl",
+            "ee_vel_aug",
+            "ee_vel",
+        ]
         if is_eval:
             self.vars_to_eval = {
                 "action": ["sum"],
-                "torques": ["sum"],
+                "joint_torques": ["sum"],
                 "peg_force_norm": ["mean", "rms", "max"],
                 "peg_torque_norm": ["mean", "rms", "max"],
                 "socket_x": ["last"],
@@ -926,7 +939,31 @@ class EvalLoggingCallback:
             fig = go.Figure()
 
             # Add Trace depending on var_name
-            if var_name == "action":
+            if var_name == "joint_angles":
+                fig.add_trace(go.Scatter(y=data[:-1, 0, 0], mode="lines+markers", name="j2"))
+                fig.add_trace(go.Scatter(y=data[:-1, 0, 1], mode="lines+markers", name="j4"))
+                fig.add_trace(go.Scatter(y=data[:-1, 0, 2], mode="lines+markers", name="j6"))
+                y_label = "Angle [deg]"
+
+            elif var_name == "joint_vels":
+                fig.add_trace(go.Scatter(y=data[:-1, 0, 0], mode="lines+markers", name="j2"))
+                fig.add_trace(go.Scatter(y=data[:-1, 0, 1], mode="lines+markers", name="j4"))
+                fig.add_trace(go.Scatter(y=data[:-1, 0, 2], mode="lines+markers", name="j6"))
+                y_label = "[deg/s]"
+
+            elif var_name == "joint_target_vels":
+                fig.add_trace(go.Scatter(y=data[:-1, 0, 0], mode="lines+markers", name="j2"))
+                fig.add_trace(go.Scatter(y=data[:-1, 0, 1], mode="lines+markers", name="j4"))
+                fig.add_trace(go.Scatter(y=data[:-1, 0, 2], mode="lines+markers", name="j6"))
+                y_label = "[deg/s]"
+
+            elif var_name == "joint_torques":
+                fig.add_trace(go.Scatter(y=data[:-1, 0, 0], mode="lines+markers", name="j2"))
+                fig.add_trace(go.Scatter(y=data[:-1, 0, 1], mode="lines+markers", name="j4"))
+                fig.add_trace(go.Scatter(y=data[:-1, 0, 2], mode="lines+markers", name="j6"))
+                y_label = "[N*m]"
+
+            elif var_name == "action":
                 fig.add_trace(go.Scatter(y=data[:-1, 0], mode="lines+markers", name="action_j2"))
                 fig.add_trace(go.Scatter(y=data[:-1, 1], mode="lines+markers", name="action_j4"))
                 try:
@@ -935,45 +972,42 @@ class EvalLoggingCallback:
                     ...
                 y_label = "Value"
 
-            elif var_name == "angles":
-                fig.add_trace(go.Scatter(y=data[:-1, 0, 0], mode="lines+markers", name="j2"))
-                fig.add_trace(go.Scatter(y=data[:-1, 0, 1], mode="lines+markers", name="j4"))
-                fig.add_trace(go.Scatter(y=data[:-1, 0, 2], mode="lines+markers", name="j6"))
-                y_label = "Angle [deg]"
-
-            elif var_name == "command":
+            elif var_name == "joint_cmd":
                 fig.add_trace(go.Scatter(y=data[:-1, 0], mode="lines+markers", name="j2"))
                 fig.add_trace(go.Scatter(y=data[:-1, 1], mode="lines+markers", name="j4"))
                 fig.add_trace(go.Scatter(y=data[:-1, 2], mode="lines+markers", name="j6"))
                 y_label = "[deg/s]"
 
-            elif var_name == "ctrl_cmd":
+            elif var_name == "ik_joint_vels":
                 fig.add_trace(go.Scatter(y=data[:-1, 0], mode="lines+markers", name="j2"))
                 fig.add_trace(go.Scatter(y=data[:-1, 1], mode="lines+markers", name="j4"))
                 fig.add_trace(go.Scatter(y=data[:-1, 2], mode="lines+markers", name="j6"))
                 y_label = "[deg/s]"
-
-            elif var_name == "velocities":
-                fig.add_trace(go.Scatter(y=data[:-1, 0, 0], mode="lines+markers", name="j2"))
-                fig.add_trace(go.Scatter(y=data[:-1, 0, 1], mode="lines+markers", name="j4"))
-                fig.add_trace(go.Scatter(y=data[:-1, 0, 2], mode="lines+markers", name="j6"))
-                y_label = "[deg/s]"
-
-            elif var_name == "target_vels":
-                fig.add_trace(go.Scatter(y=data[:-1, 0, 0], mode="lines+markers", name="j2"))
-                fig.add_trace(go.Scatter(y=data[:-1, 0, 1], mode="lines+markers", name="j4"))
-                fig.add_trace(go.Scatter(y=data[:-1, 0, 2], mode="lines+markers", name="j6"))
-                y_label = "[deg/s]"
-
-            elif var_name == "torques":
-                fig.add_trace(go.Scatter(y=data[:-1, 0, 0], mode="lines+markers", name="j2"))
-                fig.add_trace(go.Scatter(y=data[:-1, 0, 1], mode="lines+markers", name="j4"))
-                fig.add_trace(go.Scatter(y=data[:-1, 0, 2], mode="lines+markers", name="j6"))
-                y_label = "[N*m]"
 
             elif var_name == "reward":
                 fig.add_trace(go.Scatter(y=data[:-1], mode="lines+markers", name="reward"))
                 y_label = "reward"
+
+            elif var_name == "ee_vel_ctrl":
+                fig.add_trace(go.Scatter(y=data[:-1, 0], mode="lines+markers", name="x"))
+                fig.add_trace(go.Scatter(y=data[:-1, 1], mode="lines+markers", name="z"))
+                fig.add_trace(go.Scatter(y=data[:-1, 2], mode="lines+markers", name="rot"))
+                y_label = "[m/s]"
+
+            elif var_name == "ee_vel_aug":
+                fig.add_trace(go.Scatter(y=data[:-1, 0], mode="lines+markers", name="x"))
+                fig.add_trace(go.Scatter(y=data[:-1, 1], mode="lines+markers", name="z"))
+                fig.add_trace(go.Scatter(y=data[:-1, 2], mode="lines+markers", name="rot"))
+                y_label = "[m/s]"
+
+            elif var_name == "ee_vel":
+                fig.add_trace(go.Scatter(y=data[:-1, 0], mode="lines+markers", name="x"))
+                fig.add_trace(go.Scatter(y=data[:-1, 1], mode="lines+markers", name="z"))
+                fig.add_trace(go.Scatter(y=data[:-1, 2], mode="lines+markers", name="rot"))
+                y_label = "[m/s]"
+
+            else:
+                raise ValueError(f"Variable {var_name} plot not specified")
 
             fig.update_layout(
                 title=f"Episode {self.ep_num} - {var_name.capitalize()}",
@@ -986,24 +1020,27 @@ class EvalLoggingCallback:
 
         # Plot command, vels, and ctrl_cmd
         if (
-            "command" in self.vars_to_plot_data.keys()
-            and "velocities" in self.vars_to_plot_data.keys()
-            and "ctrl_cmd" in self.vars_to_plot_data.keys()
+            "joint_cmd" in self.vars_to_plot_data.keys()
+            and "ik_joint_vels" in self.vars_to_plot_data.keys()
+            and "joint_vels" in self.vars_to_plot_data.keys()
         ):
             fig = go.Figure()
-            command_data = np.array(self.vars_to_plot_data["command"][env_idx])
-            vels_data = np.array(self.vars_to_plot_data["velocities"][env_idx])
-            ctrl_cmd_data = np.array(self.vars_to_plot_data["ctrl_cmd"][env_idx])
+            joint_vels_data = np.array(self.vars_to_plot_data["joint_vels"][env_idx])
+            joint_command_data = np.array(self.vars_to_plot_data["joint_cmd"][env_idx])
+            ik_joint_vels_data = np.array(self.vars_to_plot_data["ik_joint_vels"][env_idx])
 
-            # Command
+            # Joint command: What is sent to Vortex
             fig.add_trace(
                 go.Scatter(
-                    y=command_data[:-1, 0], mode="lines+markers", name="j2_command", line=dict(color="red", dash="dash")
+                    y=joint_command_data[:-1, 0],
+                    mode="lines+markers",
+                    name="j2_command",
+                    line=dict(color="red", dash="dash"),
                 )
             )
             fig.add_trace(
                 go.Scatter(
-                    y=command_data[:-1, 1],
+                    y=joint_command_data[:-1, 1],
                     mode="lines+markers",
                     name="j4_command",
                     line=dict(color="blue", dash="dash"),
@@ -1011,47 +1048,125 @@ class EvalLoggingCallback:
             )
             fig.add_trace(
                 go.Scatter(
-                    y=command_data[:-1, 2],
+                    y=joint_command_data[:-1, 2],
                     mode="lines+markers",
                     name="j6_command",
                     line=dict(color="green", dash="dash"),
                 )
             )
 
-            # Velocities
-            fig.add_trace(go.Scatter(y=vels_data[:-1, 0, 0], mode="lines+markers", name="j2_vel", line=dict(color="red")))
-            fig.add_trace(go.Scatter(y=vels_data[:-1, 0, 1], mode="lines+markers", name="j4_vel", line=dict(color="blue")))
-            fig.add_trace(go.Scatter(y=vels_data[:-1, 0, 2], mode="lines+markers", name="j6_vel", line=dict(color="green")))
+            # ik_joint_vels: Expected trajectory
+            fig.add_trace(
+                go.Scatter(y=ik_joint_vels_data[:-1, 0], mode="lines+markers", name="j2_traj", line=dict(color="red"))
+            )
+            fig.add_trace(
+                go.Scatter(y=ik_joint_vels_data[:-1, 1], mode="lines+markers", name="j4_traj", line=dict(color="blue"))
+            )
+            fig.add_trace(
+                go.Scatter(y=ik_joint_vels_data[:-1, 2], mode="lines+markers", name="j6_traj", line=dict(color="green"))
+            )
 
-            # Controller velocities
+            # joint_velocities: Actual velocities
             fig.add_trace(
                 go.Scatter(
-                    y=ctrl_cmd_data[:-1, 0],
+                    y=joint_vels_data[:-1, 0, 0],
                     mode="lines+markers",
-                    name="j2_ctrl",
+                    name="j2_vel",
                     line=dict(color="red", dash="dashdot"),
                 )
             )
             fig.add_trace(
                 go.Scatter(
-                    y=ctrl_cmd_data[:-1, 1],
+                    y=joint_vels_data[:-1, 0, 1],
                     mode="lines+markers",
-                    name="j4_ctrl",
+                    name="j4_vel",
                     line=dict(color="blue", dash="dashdot"),
                 )
             )
             fig.add_trace(
                 go.Scatter(
-                    y=ctrl_cmd_data[:-1, 2],
+                    y=joint_vels_data[:-1, 0, 2],
                     mode="lines+markers",
-                    name="j6_ctrl",
+                    name="j6_vel",
                     line=dict(color="green", dash="dashdot"),
                 )
             )
 
-            plot_name = "comp"
+            plot_name = "joint_vels_comp"
             fig.update_layout(
                 title=f"Episode {self.ep_num} - Comp",
+                xaxis_title="Time step",
+                yaxis_title=y_label,
+            )
+            save_path = self.plots_dir / f"ep_{self.ep_num}" / f"{plot_name}_{env_idx}.html"
+            save_path.parent.mkdir(parents=True, exist_ok=True)
+            fig.write_html(save_path, auto_play=False)
+
+        if (
+            "ee_vel_ctrl" in self.vars_to_plot_data.keys()
+            and "ee_vel_aug" in self.vars_to_plot_data.keys()
+            and "ee_vel" in self.vars_to_plot_data.keys()
+        ):
+            fig = go.Figure()
+            ee_vel_ctrl = np.array(self.vars_to_plot_data["ee_vel_ctrl"][env_idx])
+            ee_vel_aug = np.array(self.vars_to_plot_data["ee_vel_aug"][env_idx])
+            ee_vel = np.array(self.vars_to_plot_data["ee_vel"][env_idx])
+
+            # ee_vel_ctrl
+            fig.add_trace(
+                go.Scatter(y=ee_vel_ctrl[:-1, 0], mode="lines+markers", name="ee_x_ctrl", line=dict(color="red", dash="dash"))
+            )
+            fig.add_trace(
+                go.Scatter(
+                    y=ee_vel_ctrl[:-1, 1],
+                    mode="lines+markers",
+                    name="ee_z_ctrl",
+                    line=dict(color="blue", dash="dash"),
+                )
+            )
+            fig.add_trace(
+                go.Scatter(
+                    y=ee_vel_ctrl[:-1, 2],
+                    mode="lines+markers",
+                    name="ee_rot_ctrl",
+                    line=dict(color="green", dash="dash"),
+                )
+            )
+
+            # ee_vel_aug
+            fig.add_trace(go.Scatter(y=ee_vel_aug[:-1, 0], mode="lines+markers", name="ee_x_aug", line=dict(color="red")))
+            fig.add_trace(go.Scatter(y=ee_vel_aug[:-1, 1], mode="lines+markers", name="ee_z_aug", line=dict(color="blue")))
+            fig.add_trace(go.Scatter(y=ee_vel_aug[:-1, 2], mode="lines+markers", name="ee_rot_aug", line=dict(color="green")))
+
+            # ee_vel
+            fig.add_trace(
+                go.Scatter(
+                    y=ee_vel[:-1, 0],
+                    mode="lines+markers",
+                    name="ee_x",
+                    line=dict(color="red", dash="dashdot"),
+                )
+            )
+            fig.add_trace(
+                go.Scatter(
+                    y=ee_vel[:-1, 1],
+                    mode="lines+markers",
+                    name="ee_z",
+                    line=dict(color="blue", dash="dashdot"),
+                )
+            )
+            fig.add_trace(
+                go.Scatter(
+                    y=ee_vel[:-1, 2],
+                    mode="lines+markers",
+                    name="ee_rot",
+                    line=dict(color="green", dash="dashdot"),
+                )
+            )
+
+            plot_name = "ee_vel_comp"
+            fig.update_layout(
+                title=f"Episode {self.ep_num} - EE Vel Comp",
                 xaxis_title="Time step",
                 yaxis_title=y_label,
             )
@@ -1063,7 +1178,7 @@ class EvalLoggingCallback:
         for var_name, eval_types in self.vars_to_eval.items():
             for each_eval_type in eval_types:
                 if each_eval_type == "sum":
-                    proc_var = np.sum(self.eval_vars_values[var_name][env_idx])
+                    proc_var = np.sum(np.abs(self.eval_vars_values[var_name][env_idx]))
                 elif each_eval_type == "mean":
                     proc_var = np.mean(self.eval_vars_values[var_name][env_idx])
                 elif each_eval_type == "rms":
@@ -1085,9 +1200,9 @@ class EvalLoggingCallback:
         print("\n---- Mean Processed values ----")
         for each_eval_var, eval_types in self.vars_to_eval.items():
             print(f"\n---- {each_eval_var} ----")
-            if each_eval_var == "socket_x":
-                print(f"\t-{self.eval_vars_proc_values[each_eval_var]['last']}")
-                continue
+            # if each_eval_var == "socket_x":
+            #     # print(f"\t-{self.eval_vars_proc_values[each_eval_var]['last']}")
+            #     continue
 
             for each_eval_type in eval_types:
                 proc_var = np.mean(self.eval_vars_proc_values[each_eval_var][each_eval_type])
