@@ -774,7 +774,7 @@ class EvalLoggingCallback:
             # Infos
             "action",
             "reward",
-            "ik_joint_vels",
+            "joint_vels_ideal",
             "ee_vel_ctrl",
             "ee_vel_aug",
             "ee_vel",
@@ -978,7 +978,7 @@ class EvalLoggingCallback:
                 fig.add_trace(go.Scatter(y=data[:-1, 2], mode="lines+markers", name="j6"))
                 y_label = "[deg/s]"
 
-            elif var_name == "ik_joint_vels":
+            elif var_name == "joint_vels_ideal":
                 fig.add_trace(go.Scatter(y=data[:-1, 0], mode="lines+markers", name="j2"))
                 fig.add_trace(go.Scatter(y=data[:-1, 1], mode="lines+markers", name="j4"))
                 fig.add_trace(go.Scatter(y=data[:-1, 2], mode="lines+markers", name="j6"))
@@ -1021,13 +1021,13 @@ class EvalLoggingCallback:
         # Plot command, vels, and ctrl_cmd
         if (
             "joint_cmd" in self.vars_to_plot_data.keys()
-            and "ik_joint_vels" in self.vars_to_plot_data.keys()
+            and "joint_vels_ideal" in self.vars_to_plot_data.keys()
             and "joint_vels" in self.vars_to_plot_data.keys()
         ):
             fig = go.Figure()
             joint_vels_data = np.array(self.vars_to_plot_data["joint_vels"][env_idx])
             joint_command_data = np.array(self.vars_to_plot_data["joint_cmd"][env_idx])
-            ik_joint_vels_data = np.array(self.vars_to_plot_data["ik_joint_vels"][env_idx])
+            joint_vels_ideal_data = np.array(self.vars_to_plot_data["joint_vels_ideal"][env_idx])
 
             # Joint command: What is sent to Vortex
             fig.add_trace(
@@ -1055,15 +1055,15 @@ class EvalLoggingCallback:
                 )
             )
 
-            # ik_joint_vels: Expected trajectory
+            # joint_vels_ideal: Expected trajectory
             fig.add_trace(
-                go.Scatter(y=ik_joint_vels_data[:-1, 0], mode="lines+markers", name="j2_traj", line=dict(color="red"))
+                go.Scatter(y=joint_vels_ideal_data[:-1, 0], mode="lines+markers", name="j2_id", line=dict(color="red"))
             )
             fig.add_trace(
-                go.Scatter(y=ik_joint_vels_data[:-1, 1], mode="lines+markers", name="j4_traj", line=dict(color="blue"))
+                go.Scatter(y=joint_vels_ideal_data[:-1, 1], mode="lines+markers", name="j4_id", line=dict(color="blue"))
             )
             fig.add_trace(
-                go.Scatter(y=ik_joint_vels_data[:-1, 2], mode="lines+markers", name="j6_traj", line=dict(color="green"))
+                go.Scatter(y=joint_vels_ideal_data[:-1, 2], mode="lines+markers", name="j6_id", line=dict(color="green"))
             )
 
             # joint_velocities: Actual velocities
