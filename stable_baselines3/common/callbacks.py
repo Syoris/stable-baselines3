@@ -743,7 +743,7 @@ class EvalLoggingCallback:
         verbose=0,
         stats_window_size=100,
         exclude_rolling_mean: list = [],
-        plot_log_interval=2,
+        plot_log_interval=10,
         track: bool = False,
         is_eval: bool = False,  # A bit confusing. If True, the callback is used from the enjoy script. Else from the EvalCallback
         log_dir: str = None,
@@ -767,17 +767,20 @@ class EvalLoggingCallback:
 
         self.vars_to_plot = [
             # Obs
-            "joint_angles",
+            # "joint_angles",
             "joint_vels",
             "joint_torques",
-            "joint_target_vels",
+            "joint_vels_ideal",
             # Infos
             "action",
             "reward",
-            "joint_vels_ideal",
+            "joint_vels_ctrl",
+            "joint_cmd",
             "ee_vel_ctrl",
             "ee_vel_aug",
             "ee_vel",
+            "peg_force",
+            "peg_torque",
         ]
         if is_eval:
             self.vars_to_eval = {
@@ -868,10 +871,10 @@ class EvalLoggingCallback:
             for var_name in self.vars_to_plot_data.keys():
                 info_keys = env_infos.keys()
                 obs_keys = env_obs.keys()
-                if var_name in info_keys:
-                    var_value = env_infos.get(var_name)
-                elif var_name in obs_keys:
+                if var_name in obs_keys:
                     var_value = env_obs.get(var_name)
+                elif var_name in info_keys:
+                    var_value = env_infos.get(var_name)
                 elif var_name == "reward":
                     var_value = env_reward
                 else:
@@ -951,7 +954,7 @@ class EvalLoggingCallback:
                 fig.add_trace(go.Scatter(y=data[:-1, 0, 2], mode="lines+markers", name="j6"))
                 y_label = "[deg/s]"
 
-            elif var_name == "joint_target_vels":
+            elif var_name == "joint_vels_ideal":
                 fig.add_trace(go.Scatter(y=data[:-1, 0, 0], mode="lines+markers", name="j2"))
                 fig.add_trace(go.Scatter(y=data[:-1, 0, 1], mode="lines+markers", name="j4"))
                 fig.add_trace(go.Scatter(y=data[:-1, 0, 2], mode="lines+markers", name="j6"))
@@ -964,10 +967,10 @@ class EvalLoggingCallback:
                 y_label = "[N*m]"
 
             elif var_name == "action":
-                fig.add_trace(go.Scatter(y=data[:-1, 0], mode="lines+markers", name="action_j2"))
-                fig.add_trace(go.Scatter(y=data[:-1, 1], mode="lines+markers", name="action_j4"))
+                fig.add_trace(go.Scatter(y=data[:-1, 0], mode="lines+markers", name="action_x"))
+                fig.add_trace(go.Scatter(y=data[:-1, 1], mode="lines+markers", name="action_z"))
                 try:
-                    fig.add_trace(go.Scatter(y=data[:-1, 2], mode="lines+markers", name="action_j6"))
+                    fig.add_trace(go.Scatter(y=data[:-1, 2], mode="lines+markers", name="action_rot"))
                 except:
                     ...
                 y_label = "Value"
@@ -978,7 +981,7 @@ class EvalLoggingCallback:
                 fig.add_trace(go.Scatter(y=data[:-1, 2], mode="lines+markers", name="j6"))
                 y_label = "[deg/s]"
 
-            elif var_name == "joint_vels_ideal":
+            elif var_name == "joint_vels_ctrl":
                 fig.add_trace(go.Scatter(y=data[:-1, 0], mode="lines+markers", name="j2"))
                 fig.add_trace(go.Scatter(y=data[:-1, 1], mode="lines+markers", name="j4"))
                 fig.add_trace(go.Scatter(y=data[:-1, 2], mode="lines+markers", name="j6"))
@@ -1006,6 +1009,18 @@ class EvalLoggingCallback:
                 fig.add_trace(go.Scatter(y=data[:-1, 2], mode="lines+markers", name="rot"))
                 y_label = "[m/s]"
 
+            elif var_name == "peg_force":
+                fig.add_trace(go.Scatter(y=data[:-1, 0], mode="lines+markers", name="x"))
+                fig.add_trace(go.Scatter(y=data[:-1, 1], mode="lines+markers", name="y"))
+                fig.add_trace(go.Scatter(y=data[:-1, 2], mode="lines+markers", name="z"))
+                y_label = "[N]"
+
+            elif var_name == "peg_torque":
+                fig.add_trace(go.Scatter(y=data[:-1, 0], mode="lines+markers", name="x"))
+                fig.add_trace(go.Scatter(y=data[:-1, 1], mode="lines+markers", name="y"))
+                fig.add_trace(go.Scatter(y=data[:-1, 2], mode="lines+markers", name="z"))
+                y_label = "[Nm]"
+
             else:
                 raise ValueError(f"Variable {var_name} plot not specified")
 
@@ -1021,20 +1036,22 @@ class EvalLoggingCallback:
         # Plot command, vels, and ctrl_cmd
         if (
             "joint_cmd" in self.vars_to_plot_data.keys()
-            and "joint_vels_ideal" in self.vars_to_plot_data.keys()
+            # and "joint_vels_ideal" in self.vars_to_plot_data.keys()
             and "joint_vels" in self.vars_to_plot_data.keys()
+            and "joint_vels_ctrl" in self.vars_to_plot_data.keys()
         ):
             fig = go.Figure()
             joint_vels_data = np.array(self.vars_to_plot_data["joint_vels"][env_idx])
             joint_command_data = np.array(self.vars_to_plot_data["joint_cmd"][env_idx])
-            joint_vels_ideal_data = np.array(self.vars_to_plot_data["joint_vels_ideal"][env_idx])
+            # joint_vels_ideal_data = np.array(self.vars_to_plot_data["joint_vels_ideal"][env_idx])
+            joint_vels_ctrl_data = np.array(self.vars_to_plot_data["joint_vels_ctrl"][env_idx])
 
-            # Joint command: What is sent to Vortex
+            # Joint command: What is sent to Vortex (ctrl + action)
             fig.add_trace(
                 go.Scatter(
                     y=joint_command_data[:-1, 0],
                     mode="lines+markers",
-                    name="j2_command",
+                    name="j2_cmd",
                     line=dict(color="red", dash="dash"),
                 )
             )
@@ -1042,7 +1059,7 @@ class EvalLoggingCallback:
                 go.Scatter(
                     y=joint_command_data[:-1, 1],
                     mode="lines+markers",
-                    name="j4_command",
+                    name="j4_cmd",
                     line=dict(color="blue", dash="dash"),
                 )
             )
@@ -1050,20 +1067,20 @@ class EvalLoggingCallback:
                 go.Scatter(
                     y=joint_command_data[:-1, 2],
                     mode="lines+markers",
-                    name="j6_command",
+                    name="j6_cmd",
                     line=dict(color="green", dash="dash"),
                 )
             )
 
-            # joint_vels_ideal: Expected trajectory
+            # joint_vels_ctrl: Joint vels from the controller
             fig.add_trace(
-                go.Scatter(y=joint_vels_ideal_data[:-1, 0], mode="lines+markers", name="j2_id", line=dict(color="red"))
+                go.Scatter(y=joint_vels_ctrl_data[:-1, 0], mode="lines+markers", name="j2_ctrl", line=dict(color="red"))
             )
             fig.add_trace(
-                go.Scatter(y=joint_vels_ideal_data[:-1, 1], mode="lines+markers", name="j4_id", line=dict(color="blue"))
+                go.Scatter(y=joint_vels_ctrl_data[:-1, 1], mode="lines+markers", name="j4_ctrl", line=dict(color="blue"))
             )
             fig.add_trace(
-                go.Scatter(y=joint_vels_ideal_data[:-1, 2], mode="lines+markers", name="j6_id", line=dict(color="green"))
+                go.Scatter(y=joint_vels_ctrl_data[:-1, 2], mode="lines+markers", name="j6_ctrl", line=dict(color="green"))
             )
 
             # joint_velocities: Actual velocities
@@ -1096,7 +1113,7 @@ class EvalLoggingCallback:
             fig.update_layout(
                 title=f"Episode {self.ep_num} - Comp",
                 xaxis_title="Time step",
-                yaxis_title=y_label,
+                yaxis_title="[deg/s]",
             )
             save_path = self.plots_dir / f"ep_{self.ep_num}" / f"{plot_name}_{env_idx}.html"
             save_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1168,7 +1185,7 @@ class EvalLoggingCallback:
             fig.update_layout(
                 title=f"Episode {self.ep_num} - EE Vel Comp",
                 xaxis_title="Time step",
-                yaxis_title=y_label,
+                yaxis_title="[m/s]",
             )
             save_path = self.plots_dir / f"ep_{self.ep_num}" / f"{plot_name}_{env_idx}.html"
             save_path.parent.mkdir(parents=True, exist_ok=True)
